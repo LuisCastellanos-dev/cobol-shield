@@ -585,15 +585,58 @@ _R04_VERBS = re.compile(
     re.IGNORECASE,
 )
 
-# Detecta declaración de formato FREE — excluye el archivo del análisis
+# Detecta declaración de formato explícita en fuente
 _RE_FREE_FORMAT = re.compile(
     r'>>\s*SOURCE\s+FORMAT\s+(IS\s+)?FREE', re.IGNORECASE
 )
+_RE_FIXED_FORMAT = re.compile(
+    r'>>\s*SOURCE\s+FORMAT\s+(IS\s+)?FIXED', re.IGNORECASE
+)
+
+# Números de secuencia en cols 1-6 sin espacios iniciales — señal de fixed-format
+_RE_SEQ_NUMBER = re.compile(r'^\d{6}')
+
+
+def _detect_source_format(lines: list[str]) -> str:
+    """
+    Detecta el formato de fuente COBOL: 'fixed', 'free', o 'unknown'.
+
+    Señal 1 (definitiva): directiva >>SOURCE FORMAT en las primeras 20 líneas.
+    Señal 2 (empírica): presencia de 6 dígitos en col 1 sin espacios iniciales.
+      En fixed-format las líneas de código comienzan con número de secuencia.
+      En free-format no hay números de secuencia — las líneas empiezan con
+      espacios o directamente con keywords COBOL.
+
+    Nota: el flag -free del compilador (Makefile) no es visible para el detector.
+    Esta heurística lo infiere del contenido del archivo.
+    """
+    # Señal 1: directiva explícita en las primeras 20 líneas
+    for line in lines[:20]:
+        if _RE_FREE_FORMAT.search(line):
+            return 'free'
+        if _RE_FIXED_FORMAT.search(line):
+            return 'fixed'
+
+    # Señal 2: ratio de líneas con número de secuencia en col 1
+    seq_count = 0
+    total = 0
+    for line in lines[:30]:
+        raw = line.rstrip('\n')
+        if not raw.strip():
+            continue
+        total += 1
+        if _RE_SEQ_NUMBER.match(raw):
+            seq_count += 1
+
+    if total == 0:
+        return 'unknown'
+
+    return 'fixed' if (seq_count / total) >= 0.5 else 'free'
 
 
 def _is_free_format(lines: list[str]) -> bool:
-    """Retorna True si el archivo declara explícitamente SOURCE FORMAT FREE."""
-    return any(_RE_FREE_FORMAT.search(l) for l in lines[:20])
+    """Retorna True si el archivo es free-format (explícito o inferido)."""
+    return _detect_source_format(lines) != 'fixed'
 
 
 @dataclass

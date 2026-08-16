@@ -445,3 +445,82 @@ class TestR04EdgeCases:
             assert 'COL7_VERB' in conditions
         finally:
             os.unlink(path)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Grupo 9 — Detección de formato empírica (fix: heurística sin >>SOURCE FORMAT)
+# ══════════════════════════════════════════════════════════════════════════════
+
+class TestR04FormatDetection:
+    """
+    R-04 debe suprimir findings en archivos free-format
+    incluso cuando no tienen >>SOURCE FORMAT FREE explícito.
+    La heurística detecta ausencia de números de secuencia en col 1-6.
+    """
+
+    def test_free_format_implicit_no_findings(self):
+        """
+        Archivo free-format sin directiva explícita — R-04 no debe disparar.
+        Simula proyectos como VAULT-CBS compilados con cobc -free sin declaración.
+        """
+        lines = [
+            'IDENTIFICATION DIVISION.',
+            'PROGRAM-ID. FREE-IMPLICIT.',
+            '*> Comentario free-format',
+            'DATA DIVISION.',
+            'WORKING-STORAGE SECTION.',
+            '01 WS-BALANCE PIC 9(10) VALUE ZEROS.',
+            '*> MOVE 999999 TO WS-BALANCE.',   # col7='*' en free = comentario estilo libre
+            'PROCEDURE DIVISION.',
+            '    MOVE 1000 TO WS-BALANCE.',
+            '    STOP RUN.',
+        ]
+        path = write_cbl(lines)
+        try:
+            assert scan_file_r04(path) == []
+        finally:
+            os.unlink(path)
+
+    def test_fixed_format_with_sequence_numbers_detects(self):
+        """
+        Archivo fixed-format con números de secuencia — R-04 debe detectar COL7_VERB.
+        """
+        lines = [
+            fixed_line('000100', ' ', 'IDENTIFICATION DIVISION.'),
+            fixed_line('000200', ' ', 'PROGRAM-ID. FIXED-TEST.'),
+            fixed_line('000300', ' ', 'DATA DIVISION.'),
+            fixed_line('000400', ' ', 'WORKING-STORAGE SECTION.'),
+            fixed_line('000500', ' ', '01 WS-X PIC 9(5) VALUE ZEROS.'),
+            fixed_line('000600', '*', 'MOVE 999 TO WS-X'),
+            fixed_line('000700', ' ', 'PROCEDURE DIVISION.'),
+            fixed_line('000800', ' ', '    STOP RUN.'),
+        ]
+        path = write_cbl(lines)
+        try:
+            findings = scan_file_r04(path)
+            assert len(findings) == 1
+            assert 'COL7_VERB' in findings[0].observation
+        finally:
+            os.unlink(path)
+
+    def test_mixed_heuristic_majority_wins(self):
+        """
+        Si la mayoría de líneas tienen secuencia, se trata como fixed.
+        Si la mayoría no tiene, se trata como free.
+        """
+        # Archivo donde NINGUNA línea tiene secuencia → free → 0 findings
+        lines_free = [
+            'IDENTIFICATION DIVISION.',
+            'PROGRAM-ID. HEURISTIC-TEST.',
+            'DATA DIVISION.',
+            'WORKING-STORAGE SECTION.',
+            '01 WS-X PIC 9(5).',
+            '* MOVE 99 TO WS-X',   # En free-format sin secuencia, col7 no aplica
+            'PROCEDURE DIVISION.',
+            '    STOP RUN.',
+        ]
+        path = write_cbl(lines_free)
+        try:
+            assert scan_file_r04(path) == []
+        finally:
+            os.unlink(path)
