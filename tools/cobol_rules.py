@@ -120,7 +120,12 @@ def scan_file_r02(file_path: str) -> List[Finding]:
         observation = (
             f"{match.verb} without ON OVERFLOW at "
             f"{p.name}:{match.line_number} — "
-            f"silent truncation risk"
+            f"silent truncation risk. "
+            f"Detector limitation: operand sizes are not calculated — "
+            f"verify manually that total source bytes can exceed the "
+            f"INTO field length before escalating. If source fields sum "
+            f"to <= destination PIC size, overflow is not reachable and "
+            f"this finding is a false positive."
         )
         f = make_finding(
             observation=observation,
@@ -299,8 +304,15 @@ def scan_file_r01(file_path: str) -> List[Finding]:
         observation = (
             f"{match.varname} PIC — no VALUE clause, no INITIALIZE/MOVE "
             f"found in PROCEDURE DIVISION at {p.name}:{match.line_number}. "
-            f"Note: initialization via COPY or PERFORM subprogram cannot "
-            f"be verified by static analysis."
+            f"Detector limitations: (1) initialization via COPY copybook "
+            f"is not followed — if a COPY is present near this declaration, "
+            f"confidence is INFERRED and manual review is required; "
+            f"(2) initialization via CALL/LINKAGE from a calling module "
+            f"is not visible to single-file static analysis — in modular "
+            f"architectures this finding may be a false positive; "
+            f"(3) PERFORM subprogram initialization cannot be verified. "
+            f"Corroborate by tracing the variable through all callers "
+            f"before escalating."
         )
         f = make_finding(
             observation=observation,
@@ -733,7 +745,11 @@ def scan_file_r04(file_path: str) -> list[Finding]:
             f'at {p.name}:{obs.line_number}. '
             f'Classification: format condition observed — '
             f'impact requires transformation differential analysis (Phase 2). '
-            f'Not a vulnerability finding.'
+            f'Not a vulnerability finding. '
+            f'Detector limitation: format detected empirically from file content '
+            f'(sequence numbers in col 1-6 or >>SOURCE FORMAT directive). '
+            f'If the compiler uses -fixed or -free flags without a source directive, '
+            f'this detection may be incorrect — verify the build system.'
         )
         f = make_finding(
             observation=observation_text,
