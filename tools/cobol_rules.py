@@ -326,3 +326,224 @@ def scan_path_r01(root: str) -> List[Finding]:
     for t in targets:
         findings.extend(scan_file_r01(str(t)))
     return findings
+
+
+# ── R-03 — REDEFINES_SIZE_MISMATCH ──────────────────────────────────────────
+
+RULE_R03 = "R-03"
+RULE_R03_DESC = "REDEFINES_SIZE_MISMATCH"
+
+# Detecta declaración con REDEFINES
+_RE_REDEFINES = re.compile(
+    r"^\s*(01|77)\s+(\S+)\s+REDEFINES\s+(\S+)\s+(.*)",
+    re.IGNORECASE,
+)
+
+# Detecta declaración base nivel 01/77 con PIC
+_RE_PIC_BASE = re.compile(
+    r"^\s*(01|77)\s+(\S+)\s+.*\bPIC\b\s+([X9ASVP]+(?:\(\d+\))?(?:V[X9ASVP]+(?:\(\d+\))?)?)\b",
+    re.IGNORECASE,
+)
+
+# Detecta tipos COMP — tamaño PIC no refleja tamaño real
+_RE_COMP_TYPE = re.compile(
+    r"\bCOMP(?:-[135])?\b|\bBINARY\b|\bPACKED-DECIMAL\b",
+    re.IGNORECASE,
+)
+
+
+def _pic_declared_bytes(pic_clause: str) -> int:
+    """
+    Calcula bytes declarados en una cláusula PIC.
+    Base: PIC X(n)=n, PIC 9(n)=n, PIC X=1, PIC 9=1.
+    PIC 9(n)V9(m) = n+m (decimal virtual, no ocupa byte extra).
+    COMP/COMP-3 no se ajusta — se documenta como limitación.
+    Retorna 0 si no puede calcular.
+    """
+    pic = pic_clause.upper().strip()
+    # Remover V (decimal point virtual — no ocupa espacio)
+    pic = re.sub(r'V', '', pic)
+    total = 0
+    # Contar repeticiones explícitas: X(10), 9(8)
+    for m in re.finditer(r'[X9A](?:\((\d+)\))?', pic):
+        count = int(m.group(1)) if m.group(1) else 1
+        total += count
+    # S (sign) no ocupa byte en PIC declaration estándar
+    return total
+
+
+def _extract_pic_from_line(line: str) -> tuple[str, bool]:
+    """
+    Extrae la cláusula PIC de una línea y detecta si tiene COMP.
+    Retorna (pic_clause, is_comp).
+    """
+    m = re.search(r'\bPIC\s+([X9ASV]+(?:\(\d+\))?(?:V[X9ASV]+(?:\(\d+\))?)?)',
+                  line, re.IGNORECASE)
+    pic = m.group(1) if m else ""
+    is_comp = bool(_RE_COMP_TYPE.search(line))
+    return pic, is_comp
+
+
+@dataclass
+class R03Match:
+    line_number: int        # línea del REDEFINES
+    base_line: int          # línea del campo base
+    redef_name: str
+    base_name: str
+    redef_pic: str
+    base_pic: str
+    redef_bytes: int
+    base_bytes: int
+    redef_is_comp: bool
+    base_is_comp: bool
+
+
+def _scan_r03(lines: list) -> list:
+    """
+    Detecta REDEFINES donde el tamaño declarado del redefinido
+    supera el tamaño declarado del base.
+
+    Limitaciones documentadas:
+    - Solo nivel 01/77 en WORKING-STORAGE
+    - COMP/COMP-3 marcado INFERRED — tamaño real difiere del PIC
+    - Base en COPY externo marcado INFERRED
+    """
+    # Primero extraer todos los campos base nivel 01/77 con su PIC
+    base_fields = {}  # nombre -> (lineno, pic, is_comp)
+    in_ws = False
+    for i, line in enumerate(lines):
+        if _RE_WS_START.match(line):
+            in_ws = True
+            continue
+        if in_ws and _RE_SECTION_END.match(line):
+            in_ws = False
+            continue
+        if not in_ws:
+            continue
+        m = _RE_PIC_BASE.match(line)
+        if m:
+            varname = m.group(2).upper().rstrip('.')
+            pic, is_comp = _extract_pic_from_line(line)
+            base_fields[varname] = (i + 1, pic, is_comp)
+
+    # Ahora detectar REDEFINES
+    matches = []
+    in_ws = False
+    for i, line in enumerate(lines):
+        if _RE_WS_START.match(line):
+            in_ws = True
+            continue
+        if in_ws and _RE_SECTION_END.match(line):
+            in_ws = False
+            continue
+        if not in_ws:
+            continue
+
+        m = _RE_REDEFINES.match(line)
+        if not m:
+            continue
+
+        redef_name = m.group(2).rstrip('.')
+        base_name = m.group(3).rstrip('.').upper()
+        rest = m.group(4)
+
+        # Extraer PIC del campo redefinido
+        redef_pic, redef_is_comp = _extract_pic_from_line(line)
+        if not redef_pic:
+            # PIC puede estar en línea siguiente — best effort
+            if i + 1 < len(lines):
+                redef_pic, redef_is_comp = _extract_pic_from_line(lines[i + 1])
+
+        if not redef_pic:
+            continue
+
+        redef_bytes = _pic_declared_bytes(redef_pic)
+
+        # Buscar campo base
+        if base_name not in base_fields:
+            # Base no encontrado en mismo archivo — INFERRED
+            continue  # no reportar sin base verificable
+
+        base_lineno, base_pic, base_is_comp = base_fields[base_name]
+        base_bytes = _pic_declared_bytes(base_pic)
+
+        if redef_bytes > base_bytes:
+            matches.append(R03Match(
+                line_number=i + 1,
+                base_line=base_lineno,
+                redef_name=redef_name,
+                base_name=base_name,
+                redef_pic=redef_pic,
+                base_pic=base_pic,
+                redef_bytes=redef_bytes,
+                base_bytes=base_bytes,
+                redef_is_comp=redef_is_comp,
+                base_is_comp=base_is_comp,
+            ))
+
+    return matches
+
+
+def scan_file_r03(file_path: str) -> list:
+    """
+    Escanea un archivo COBOL para R-03 REDEFINES_SIZE_MISMATCH.
+    Retorna lista de VTR Findings con tamaños declarados explícitos.
+    """
+    p = Path(file_path)
+    try:
+        lines = p.read_text(encoding="utf-8", errors="replace").splitlines()
+    except OSError:
+        return []
+
+    raw_matches = _scan_r03(lines)
+    findings = []
+    for match in raw_matches:
+        has_comp = match.redef_is_comp or match.base_is_comp
+        confidence = "INFERRED" if has_comp else CONF_OBSERVED
+
+        comp_note = (
+            " Note: COMP/COMP-3 actual byte size not calculated — "
+            "verify with compiler if COMP types involved."
+            if has_comp else ""
+        )
+
+        observation = (
+            f"{match.redef_name} REDEFINES {match.base_name} — "
+            f"declared size mismatch: "
+            f"{match.base_name} PIC {match.base_pic} = {match.base_bytes} bytes "
+            f"(PIC declaration, not COMP-adjusted); "
+            f"{match.redef_name} PIC {match.redef_pic} = {match.redef_bytes} bytes "
+            f"(PIC declaration, not COMP-adjusted); "
+            f"redefined size ({match.redef_bytes}) exceeds base size "
+            f"({match.base_bytes}) by {match.redef_bytes - match.base_bytes} bytes "
+            f"at {p.name}:{match.line_number} "
+            f"(base at line {match.base_line})."
+            f"{comp_note}"
+        )
+
+        f = make_finding(
+            observation=observation,
+            file_path=file_path,
+            line=match.line_number,
+            severity=SEV_HIGH,
+            classification=CLASS_HECHO,
+            confidence=confidence,
+            rule_id=RULE_R03,
+        )
+        findings.append(f)
+    return findings
+
+
+def scan_path_r03(root: str) -> list:
+    """Escanea un path para R-03."""
+    COBOL_EXTS = {'.cob', '.cbl', '.cpy'}
+    p = Path(root)
+    targets = (
+        [p] if p.is_file()
+        else [f for f in p.rglob("*")
+              if f.is_file() and f.suffix.lower() in COBOL_EXTS]
+    )
+    findings = []
+    for t in targets:
+        findings.extend(scan_file_r03(str(t)))
+    return findings
