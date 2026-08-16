@@ -22,8 +22,10 @@ from typing import List
 
 from tools.vtr_finding import (
     CLASS_HECHO,
+    CLASS_PROYECCION,
     CONF_OBSERVED,
     SEV_HIGH,
+    SEV_INFO,
     Finding,
     make_finding,
 )
@@ -546,4 +548,173 @@ def scan_path_r03(root: str) -> list:
     findings = []
     for t in targets:
         findings.extend(scan_file_r03(str(t)))
+    return findings
+
+
+# ── R-04 — FORMAT_BOUNDARY_ANALYSIS ─────────────────────────────────────────
+#
+# Fase 1: Format Boundary Analysis — solo observaciones, sin severidad asignada.
+#
+# Produce condiciones OBSERVADAS del formato posicional de COBOL fixed-format.
+# No produce findings de vulnerabilidad. No presume intención maliciosa.
+# Es insumo para Fase 2 (Transformation Differential) — aún no implementada.
+#
+# Clasificación: PROYECCION — condición observable, impacto depende de
+# transformación posterior no demostrada en este detector.
+#
+# Tres condiciones detectadas:
+#   R-04a COL73_NONEMPTY    — contenido no-espacio en identification area (73-80)
+#   R-04b COL7_VERB         — verbo COBOL ejecutable en línea comentada (col7=*)
+#   R-04c SOURCE_BOUNDARY   — línea con contenido no-espacio más allá de col 72
+#                             cuando col 73-80 NO son identification area estándar
+#
+# Limitaciones documentadas:
+#   - Solo aplica a archivos declarados o inferidos como FIXED format
+#   - No detecta formato FREE (>>SOURCE FORMAT FREE)
+#   - COL73_NONEMPTY puede ser metadata histórica legítima (ID de programador)
+#   - COL7_VERB no implica activación — requiere PoC de transformación (Fase 2)
+#   - COMP/COMP-3 y continuaciones multi-línea fuera de scope de este detector
+
+RULE_R04 = "R-04"
+RULE_R04_DESC = "FORMAT_BOUNDARY_ANALYSIS"
+
+# Verbos COBOL ejecutables para R-04b
+_R04_VERBS = re.compile(
+    r'\b(MOVE|PERFORM|EXEC|CALL|COMPUTE|IF|EVALUATE|'
+    r'STRING|UNSTRING|GO\s+TO|ALTER|INSPECT|DISPLAY|ACCEPT)\b',
+    re.IGNORECASE,
+)
+
+# Detecta declaración de formato FREE — excluye el archivo del análisis
+_RE_FREE_FORMAT = re.compile(
+    r'>>\s*SOURCE\s+FORMAT\s+(IS\s+)?FREE', re.IGNORECASE
+)
+
+
+def _is_free_format(lines: list[str]) -> bool:
+    """Retorna True si el archivo declara explícitamente SOURCE FORMAT FREE."""
+    return any(_RE_FREE_FORMAT.search(l) for l in lines[:20])
+
+
+@dataclass
+class R04Observation:
+    """Observación de condición posicional — no es finding de severidad."""
+    condition: str      # COL73_NONEMPTY | COL7_VERB | SOURCE_BOUNDARY
+    line_number: int
+    line_content: str
+    detail: str         # contenido específico observado
+
+
+def _scan_r04(lines: list[str]) -> list[R04Observation]:
+    """
+    Analiza líneas de COBOL fixed-format para condiciones posicionales.
+
+    No presume intención. Produce observaciones para Fase 2.
+    """
+    if _is_free_format(lines):
+        return []  # formato FREE — posición de columna no aplica
+
+    observations = []
+    for i, line in enumerate(lines):
+        raw = line.rstrip('\r\n')
+        line_num = i + 1
+
+        # R-04a — COL73_NONEMPTY
+        # En fixed-format de 80 chars, cols 73-80 son identification area.
+        # Contenido no-espacio es condición observable — puede ser ID legítimo
+        # o puede ser contenido que herramientas de transformación interpretan.
+        if len(raw) >= 73:
+            id_area = raw[72:]          # cols 73-80 (índice 0-based: 72+)
+            if id_area.strip(' '):      # algo no-espacio (incluye tabs, chars especiales)
+                observations.append(R04Observation(
+                    condition='COL73_NONEMPTY',
+                    line_number=line_num,
+                    line_content=raw,
+                    detail=f'identification area content: {repr(id_area.rstrip())}',
+                ))
+
+        # R-04b — COL7_VERB
+        # Col 7 (índice 6) = '*' o '/' indica comentario en fixed-format.
+        # Si el contenido después contiene verbo ejecutable, es código dormido.
+        # Activación requiere transformación que desplace col7 — Fase 2.
+        if len(raw) >= 8:
+            col7 = raw[6]
+            if col7 in ('*', '/', 'D'):
+                content_after = raw[7:72]   # solo hasta col 72
+                if _R04_VERBS.search(content_after):
+                    observations.append(R04Observation(
+                        condition='COL7_VERB',
+                        line_number=line_num,
+                        line_content=raw,
+                        detail=(
+                            f'col7={repr(col7)} with executable verb in '
+                            f'comment/debug area: {repr(content_after.strip())}'
+                        ),
+                    ))
+
+        # R-04c — SOURCE_BOUNDARY
+        # Línea con contenido no-espacio en posición >72 que NO es un
+        # archivo de 80 chars estándar (id_area ya cubierta por R-04a).
+        # Caso: archivo importado de Git sin padding que truncó en migración.
+        if len(raw) > 80:
+            beyond = raw[80:]
+            if beyond.strip():
+                observations.append(R04Observation(
+                    condition='SOURCE_BOUNDARY',
+                    line_number=line_num,
+                    line_content=raw,
+                    detail=f'content beyond col 80: {repr(beyond.rstrip())}',
+                ))
+
+    return observations
+
+
+def scan_file_r04(file_path: str) -> list[Finding]:
+    """
+    Escanea un archivo COBOL para R-04 FORMAT_BOUNDARY_ANALYSIS.
+
+    Produce findings con severity=info y classification=PROYECCION.
+    Son observaciones de condición, no de vulnerabilidad.
+    """
+    p = Path(file_path)
+    try:
+        lines = p.read_text(encoding='utf-8', errors='replace').splitlines()
+    except OSError:
+        return []
+
+    observations = _scan_r04(lines)
+    findings = []
+    for obs in observations:
+        observation_text = (
+            f'[R-04 {obs.condition}] {obs.detail} '
+            f'at {p.name}:{obs.line_number}. '
+            f'Classification: format condition observed — '
+            f'impact requires transformation differential analysis (Phase 2). '
+            f'Not a vulnerability finding.'
+        )
+        f = make_finding(
+            observation=observation_text,
+            file_path=file_path,
+            line=obs.line_number,
+            severity=SEV_INFO,
+            classification=CLASS_PROYECCION,
+            confidence=CONF_OBSERVED,
+            rule_id=RULE_R04,
+        )
+        findings.append(f)
+    return findings
+
+
+def scan_path_r04(root: str) -> list[Finding]:
+    """Escanea un path para R-04."""
+    COBOL_EXTS = {'.cob', '.cbl', '.cpy'}
+    p = Path(root)
+    targets = (
+        [p] if p.is_file()
+        else [f for f in p.rglob('*')
+              if f.is_file() and f.suffix.lower() in COBOL_EXTS]
+    )
+    findings = []
+    for t in targets:
+        findings.extend(scan_file_r04(str(t)))
     return findings
