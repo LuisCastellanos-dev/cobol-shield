@@ -214,7 +214,35 @@ line = line[:80]
 
 ---
 
-## Phase 2 — Transformation Differential
+## Compiler Flag Semantic Divergence — Definitive PoC
+
+When R-04b `COL7_VERB` findings are present, run the compiler flag PoC
+to establish whether the file's semantics are flag-dependent:
+
+```bash
+bash tools/poc_compiler_flag.sh
+```
+
+**Classification logic:**
+
+| Result | Classification |
+|--------|----------------|
+| `-fixed` compiles, `-free` rejected | CONFIRMADO — same file invalid under free-format |
+| `-fixed` compiles, `-free` compiles with different output | CONFIRMADO — semantic divergence |
+| Both compile with same output | PROBABLE — condition present, no observable effect |
+
+**What CONFIRMADO means for remediation:**
+
+The source file is format-dependent. Any migration, renumbering, or
+toolchain change that alters the compilation format flag will change
+the program's validity or behavior. Before any format migration:
+
+1. Run `bash tools/poc_compiler_flag.sh` on affected files
+2. Document results with SHA-256 and compiler version
+3. If CONFIRMADO: address R-04b findings before migrating format
+4. After migration: re-run full scan and verify output equivalence
+
+
 
 When R-04b produces a finding, Phase 2 determines its classification.
 

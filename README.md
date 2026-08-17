@@ -31,7 +31,8 @@ and fixed-format positional conditions that change meaning under transformation.
 | `src/AUDITOR-INVISIBLE.cob` | In-COBOL byte validator using `HEX-OF` |
 | `tools/cobol_rules.py` | Static analysis rules R-01 through R-04 |
 | `tools/transform_renumber.py` | Fixed-format renumber shift simulator (Phase 2) |
-| `tools/poc_differential.sh` | Transformation differential PoC (GnuCOBOL required) |
+| `tools/poc_compiler_flag.sh` | **Definitive PoC** — same file, `-fixed` vs `-free`, compiler flag divergence |
+| `tools/poc_differential.sh` | Phase 2 differential PoC — SOURCE A vs SOURCE B (manual migration) |
 
 ---
 
@@ -72,30 +73,52 @@ differential analysis (Phase 2).
 
 ---
 
-## Transformation Differential — Phase 2
+## Compiler Flag Semantic Divergence — Definitive PoC
 
-R-04b `COL7_VERB` findings are **CONFIRMADO** when a transformation
-(fixed→free-format migration) demonstrably activates dormant code.
+The central thesis: **a COBOL fixed-format file has different semantics
+depending on the compiler flag used to build it — and that flag lives
+outside the source file.**
 
-**Demonstrated with GnuCOBOL 3.1.2:**
+**Demonstrated with GnuCOBOL 3.1.2, single artifact, no modification:**
+
+```bash
+bash tools/poc_compiler_flag.sh
+```
+
+```
+cobc -x -fixed poc-same-file.cbl → compiles → output: 0000001000
+cobc -x -free  poc-same-file.cbl → 10 compilation errors
+```
+
+Under `-fixed`: line 6 col7=`*` is the comment indicator — `MOVE 999999`
+is dormant, program executes and displays `1000`.
+
+Under `-free`: sequence numbers `000100`...`001000` are parsed as numeric
+literals — `PROGRAM-ID` header is reported missing, every line produces
+an error. The same file is syntactically invalid.
+
+The compiler flag is not inside the source file. It lives in the Makefile,
+CI configuration, or operator invocation. Changing it — intentionally or
+accidentally — changes whether the program is valid and what it does.
+
+**Evidence:** `corpus/fixed-format/poc-evidence.md`  
+SHA-256 and full error log documented.
+
+## Transformation Differential — Phase 2 (manual migration)
+
+An earlier PoC demonstrates the same thesis via manual migration:
 
 ```
 SOURCE A (fixed-format, col7='*' dormant):   output → 0000001000
 SOURCE B (free-format,  code active):         output → 0000999999
 ```
 
-SHA-256 A: `b70a948a0df5e8f685e82f5bffc9c4710f2c0a7a23b6294e7ca20092c2d25d37`
+SHA-256 A: `b70a948a0df5e8f685e82f5bffc9c4710f2c0a7a23b6294e7ca20092c2d25d37`  
 SHA-256 B: `f5fd80f79ed3e5be97628f89790256d6fba80605dce2b7985b729b5fef6f26d5`
 
-**Run the PoC** (requires GnuCOBOL):
-
-```bash
-bash tools/poc_differential.sh
-```
-
-**Limitation:** SOURCE B is a manual representation of an incorrect
-fixed→free migration. Behavior of IBM Z Open Editor or IBM SCU
-under real renumbering conditions is not yet verified.
+**Limitation:** SOURCE B is a manual representation of incorrect migration,
+not the output of IBM Z Open Editor or IBM SCU under real renumbering.
+The compiler flag PoC above does not have this limitation.
 
 ---
 
