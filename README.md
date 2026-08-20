@@ -3,7 +3,8 @@
 **Security auditing toolkit for COBOL legacy systems**
 
 Detects invisible Unicode attacks, unsafe COBOL patterns, and format
-transformation integrity issues in GnuCOBOL sources and Zowe API→COBOL pipelines.
+transformation integrity issues in GnuCOBOL sources.
+Validated with GnuCOBOL 3.1.2. Behavior on IBM Enterprise COBOL or Micro Focus not verified — compiler-specific flag semantics may differ.
 
 `PIC X` accepts everything. Your batch shouldn't.
 
@@ -211,6 +212,16 @@ python -m pytest tests/ -q
 - [GnuCOBOL Programmer's Guide](https://gnucobol.sourceforge.io/)
 - [Open Mainframe Project — Zowe](https://github.com/zowe)
 - [VTR Finding Schema v1 — tools/vtr_finding.py](tools/vtr_finding.py)
+
+## Known Limitations
+
+**Compiler scope:** All rules validated against GnuCOBOL 3.1.2 only. IBM Enterprise COBOL and Micro Focus COBOL have different flag semantics, column boundary behavior, and extension support. Results on those compilers are unverified — classify as INFERENCIA until tested.
+
+**R-04 keyword matching (COL7_VERB):** Detection of COBOL verbs in commented lines uses a fixed keyword list. A commented line containing a security-relevant verb not in the list produces a false negative. R-04 is classified PROYECCION for this reason — it documents conditions, not confirmed vulnerabilities.
+
+**cfg-shield analog — feature name dependency:** The cross-language methodology documented in METHODOLOGY.md assumes feature/flag names follow recognizable conventions. A security-relevant flag with a non-descriptive name (e.g., `legacy`, `compat`) may not be classified correctly without manual review.
+
+**Single-compiler PoC:** The definitive PoC (poc-same-file.cbl) demonstrates divergence under GnuCOBOL. The same divergence class is expected but not yet verified under other COBOL compilers.
 
 ---
 
