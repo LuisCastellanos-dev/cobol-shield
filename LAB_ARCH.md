@@ -189,6 +189,7 @@ detection and the actual host context.
 
 **Reference:** Tailscale 1.102.3 installed on Parrot OS Echo (Debian 13 base)
 via `https://tailscale.com/install.sh`, 2026-08-21.
+Upstream issue: github.com/tailscale/tailscale/issues/20960
 
 ## Relationship with cobol-shield
 
